@@ -2,15 +2,14 @@
  * RecordingScreen — Main recording interface
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, Alert,
-  SafeAreaView, StatusBar, Dimensions, ScrollView,
+  View, Text, TouchableOpacity, StyleSheet,
+  SafeAreaView, StatusBar, Dimensions, ScrollView, Alert,
 } from 'react-native';
 import { CameraView } from 'expo-camera';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import NetInfo from '@react-native-community/netinfo';
 
 import { useIMU } from '../hooks/useIMU';
 import { useGPS } from '../hooks/useGPS';
@@ -30,98 +29,89 @@ import { COLORS, SPACING, RADIUS } from '../utils/theme';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const SESSION_ID_PREFIX = 'pulse_';
 
+// ─── Merge all display values into one state object → one render per tick ────
+const INITIAL_DISPLAY = {
+  accelZ: 0,
+  currentIRI: null,
+  isSpeedValid: false,
+  speedKmh: 0,
+  distanceM: 0,
+  gpsCoords: null,
+  audioRMS: 0,
+  currentSegmentDistance: 0,
+  elapsedSeconds: 0,
+  wsStatus: 'off',
+};
+
 export default function RecordingScreen() {
   const navigation = useNavigation();
   const route = useRoute();
-  const { sessionName, serverHost, cameraHeightM, segmentLengthM } = route.params;
+  const { sessionName, serverHost, segmentLengthM } = route.params;
 
-  // ─── Core State ────────────────────────────────────────────────────────────
   const [isRecording, setIsRecording] = useState(false);
-  const [sessionId, setSessionId] = useState(null);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const sessionStartTime = useRef(null);
-  const elapsedTimer = useRef(null);
-
-  // ─── Display State (throttled — updated at 10fps max) ──────────────────────
-  const [accelZ, setAccelZ] = useState(0);
-  const [currentIRI, setCurrentIRI] = useState(null);
-  const [isSpeedValid, setIsSpeedValid] = useState(false);
-  const [speedKmh, setSpeedKmh] = useState(0);
-  const [distanceM, setDistanceM] = useState(0);
-  const [gpsCoords, setGpsCoords] = useState(null);
-  const [audioRMS, setAudioRMS] = useState(0);
-  const [currentSegmentDistance, setCurrentSegmentDistance] = useState(0);
-
-  // ─── Raw Value Refs (high-frequency, no re-render) ─────────────────────────
-  const accelZRef = useRef(0);
-  const audioRMSRef = useRef(0);
-  const speedKmhRef = useRef(0);
-  const distanceMRef = useRef(0);
-  const isSpeedValidRef = useRef(false);
-  const gpsCoordsRef = useRef(null);
-  const currentSegmentDistanceRef = useRef(0);
-  const currentIRIRef = useRef(null);
-
-  // ─── Session Refs ──────────────────────────────────────────────────────────
+  const [display, setDisplay] = useState(INITIAL_DISPLAY);
   const [completedSegments, setCompletedSegments] = useState([]);
-  const completedSegmentsRef = useRef([]);
-  const segmentStartDistanceRef = useRef(0);
-  const segmentIndexRef = useRef(0);
-
-  const [wsStatus, setWsStatus] = useState('off');
   const [queueSize, setQueueSize] = useState(0);
 
-  const iriUpdateTimer = useRef(null);
-  const displayTimer = useRef(null); // FIX: single throttled display update timer
-  const isRecordingRef = useRef(false);
-  const sessionIdRef = useRef(null);
-  const isStoppingRef = useRef(false); // FIX: guard against double-stop
+  // ─── All raw/live values in refs — zero re-renders ─────────────────────────
+  const refs = useRef({
+    isRecording: false,
+    isStopping: false,
+    sessionId: null,
+    sessionStartTime: null,
+    accelZ: 0,
+    audioRMS: 0,
+    speedKmh: 0,
+    distanceM: 0,
+    isSpeedValid: false,
+    gpsCoords: null,
+    segmentDist: 0,
+    currentIRI: null,
+    completedSegments: [],
+    segmentStartDist: 0,
+    segmentIndex: 0,
+    wsStatus: 'off',
+    elapsedSeconds: 0,
+  }).current;
 
-  // ─── NetInfo ───────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const unsubscribe = NetInfo.addEventListener(() => {}); // keep listener alive for network awareness
-    return () => unsubscribe();
+  const elapsedTimer = useRef(null);
+  const displayTimer = useRef(null);
+  const iriTimer = useRef(null);
+  const segIndexRef = useRef(0); // needed for render
+
+  // ─── Single display update tick — ONE setState = ONE render ────────────────
+  const startDisplayTimer = useCallback(() => {
+    if (displayTimer.current) return;
+    displayTimer.current = setInterval(() => {
+      setDisplay({
+        accelZ: refs.accelZ,
+        currentIRI: refs.currentIRI,
+        isSpeedValid: refs.isSpeedValid,
+        speedKmh: refs.speedKmh,
+        distanceM: refs.distanceM,
+        gpsCoords: refs.gpsCoords,
+        audioRMS: refs.audioRMS,
+        currentSegmentDistance: refs.segmentDist,
+        elapsedSeconds: refs.elapsedSeconds,
+        wsStatus: refs.wsStatus,
+      });
+    }, 150); // ~7fps — smooth enough, minimal re-renders
   }, []);
 
-  useEffect(() => { isRecordingRef.current = isRecording; }, [isRecording]);
-  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
-
-  // ─── Throttled Display Timer (10fps) ───────────────────────────────────────
-  // FIX: instead of setState on every sensor sample (200Hz), batch all UI updates here
-  useEffect(() => {
-    if (isRecording) {
-      displayTimer.current = setInterval(() => {
-        setAccelZ(accelZRef.current);
-        setAudioRMS(audioRMSRef.current);
-        setSpeedKmh(speedKmhRef.current);
-        setDistanceM(distanceMRef.current);
-        setIsSpeedValid(isSpeedValidRef.current);
-        setGpsCoords(gpsCoordsRef.current);
-        setCurrentSegmentDistance(currentSegmentDistanceRef.current);
-        setCurrentIRI(currentIRIRef.current);
-      }, 100); // 10fps — plenty for human eyes
-    } else {
-      if (displayTimer.current) {
-        clearInterval(displayTimer.current);
-        displayTimer.current = null;
-      }
+  const stopDisplayTimer = useCallback(() => {
+    if (displayTimer.current) {
+      clearInterval(displayTimer.current);
+      displayTimer.current = null;
     }
-    return () => {
-      if (displayTimer.current) {
-        clearInterval(displayTimer.current);
-        displayTimer.current = null;
-      }
-    };
-  }, [isRecording]);
+  }, []);
 
   // ─── Sensor Hooks ──────────────────────────────────────────────────────────
-
   const imu = useIMU({
     enabled: isRecording,
     onSample: useCallback((packet) => {
-      if (!isRecordingRef.current) return;
-      accelZRef.current = packet.az - 9.81; // FIX: ref only, no setState
-      pushSample(packet.az, speedKmhRef.current);
+      if (!refs.isRecording) return;
+      refs.accelZ = packet.az - 9.81;
+      pushSample(packet.az, refs.speedKmh);
       wsClient.send(packet);
     }, []),
   });
@@ -129,17 +119,14 @@ export default function RecordingScreen() {
   const gps = useGPS({
     enabled: isRecording,
     onSample: useCallback((packet) => {
-      if (!isRecordingRef.current) return;
-      speedKmhRef.current = packet.speed_kmh;
-      isSpeedValidRef.current = packet.speed_kmh >= 20;
-      distanceMRef.current = packet.distance_m;
-      gpsCoordsRef.current = { lat: packet.lat, lng: packet.lng };
-
-      const segmentDist = packet.distance_m - segmentStartDistanceRef.current;
-      currentSegmentDistanceRef.current = segmentDist;
-
-      if (segmentDist >= segmentLengthM) {
-        segmentStartDistanceRef.current = packet.distance_m;
+      if (!refs.isRecording) return;
+      refs.speedKmh = packet.speed_kmh;
+      refs.isSpeedValid = packet.speed_kmh >= 20;
+      refs.distanceM = packet.distance_m;
+      refs.gpsCoords = { lat: packet.lat, lng: packet.lng };
+      refs.segmentDist = packet.distance_m - refs.segmentStartDist;
+      if (refs.segmentDist >= segmentLengthM) {
+        refs.segmentStartDist = packet.distance_m;
       }
       wsClient.send(packet);
     }, [segmentLengthM]),
@@ -148,7 +135,7 @@ export default function RecordingScreen() {
   const camera = useCamera({
     enabled: isRecording,
     onFrame: useCallback((packet) => {
-      if (!isRecordingRef.current) return;
+      if (!refs.isRecording) return;
       wsClient.send(packet);
     }, []),
   });
@@ -156,16 +143,16 @@ export default function RecordingScreen() {
   const audio = useAudio({
     enabled: isRecording,
     onSample: useCallback((packet) => {
-      if (!isRecordingRef.current) return;
-      audioRMSRef.current = packet.rms; // FIX: ref only, no setState
+      if (!refs.isRecording) return;
+      refs.audioRMS = packet.rms;
       wsClient.send(packet);
     }, []),
   });
 
-  // ─── WebSocket Events ──────────────────────────────────────────────────────
+  // ─── WebSocket callbacks ───────────────────────────────────────────────────
   useEffect(() => {
-    wsClient.onConnected = () => setWsStatus('connected');
-    wsClient.onDisconnected = () => setWsStatus('disconnected');
+    wsClient.onConnected = () => { refs.wsStatus = 'connected'; };
+    wsClient.onDisconnected = () => { refs.wsStatus = 'disconnected'; };
     wsClient.onSegmentComplete = handleSegmentComplete;
     wsClient.onQueueDrain = () => setQueueSize(0);
     return () => {
@@ -177,83 +164,74 @@ export default function RecordingScreen() {
   }, []);
 
   useEffect(() => {
-    const timer = setInterval(() => setQueueSize(wsClient.getStatus().queueSize), 2000);
-    return () => clearInterval(timer);
+    const t = setInterval(() => setQueueSize(wsClient.getStatus().queueSize), 2000);
+    return () => clearInterval(t);
   }, []);
-
-  // ─── Rolling IRI (via ref, batched into display timer above) ───────────────
-  useEffect(() => {
-    if (isRecording) {
-      iriUpdateTimer.current = setInterval(() => {
-        currentIRIRef.current = computeRollingIRI();
-      }, 500);
-    } else {
-      if (iriUpdateTimer.current) {
-        clearInterval(iriUpdateTimer.current);
-        iriUpdateTimer.current = null;
-      }
-    }
-    return () => {
-      if (iriUpdateTimer.current) {
-        clearInterval(iriUpdateTimer.current);
-        iriUpdateTimer.current = null;
-      }
-    };
-  }, [isRecording]);
 
   // ─── Segment Complete ──────────────────────────────────────────────────────
   async function handleSegmentComplete(segment) {
-    const segWithIndex = { ...segment, segment_index: segmentIndexRef.current };
-    segmentIndexRef.current++;
-    const updated = [...completedSegmentsRef.current, segWithIndex];
-    completedSegmentsRef.current = updated;
-    setCompletedSegments(updated);
-    if (sessionIdRef.current) {
-      await saveSegment(sessionIdRef.current, segWithIndex.segment_index, segWithIndex);
+    const seg = { ...segment, segment_index: refs.segmentIndex };
+    refs.segmentIndex++;
+    segIndexRef.current = refs.segmentIndex;
+    refs.completedSegments = [...refs.completedSegments, seg];
+    setCompletedSegments([...refs.completedSegments]);
+    if (refs.sessionId) {
+      await saveSegment(refs.sessionId, seg.segment_index, seg);
     }
   }
 
   // ─── Start ─────────────────────────────────────────────────────────────────
   async function startRecording() {
-  if (isRecordingRef.current) return;
+    if (refs.isRecording) return;
 
-  // FIX: set immediately so UI shows stop button before awaits complete
-  setIsRecording(true);
-  isRecordingRef.current = true;
+    // Flip state immediately so stop button shows
+    refs.isRecording = true;
+    refs.isStopping = false;
+    setIsRecording(true);
 
-  const newSessionId = SESSION_ID_PREFIX + Date.now();
-  setSessionId(newSessionId);
-  sessionIdRef.current = newSessionId;
+    const newSessionId = SESSION_ID_PREFIX + Date.now();
+    refs.sessionId = newSessionId;
+    refs.accelZ = 0;
+    refs.audioRMS = 0;
+    refs.speedKmh = 0;
+    refs.distanceM = 0;
+    refs.isSpeedValid = false;
+    refs.gpsCoords = null;
+    refs.segmentDist = 0;
+    refs.currentIRI = null;
+    refs.completedSegments = [];
+    refs.segmentStartDist = 0;
+    refs.segmentIndex = 0;
+    refs.elapsedSeconds = 0;
+    refs.wsStatus = 'connecting';
+    segIndexRef.current = 0;
 
-  await createSession({ id: newSessionId, name: sessionName, serverHost });
+    setCompletedSegments([]);
+    setDisplay({ ...INITIAL_DISPLAY, wsStatus: 'connecting' });
 
-  resetIRIEstimator();
-  completedSegmentsRef.current = [];
-  setCompletedSegments([]);
-  currentIRIRef.current = null;
-  distanceMRef.current = 0;
-  accelZRef.current = 0;
-  audioRMSRef.current = 0;
-  speedKmhRef.current = 0;
-  isSpeedValidRef.current = false;
-  gpsCoordsRef.current = null;
-  currentSegmentDistanceRef.current = 0;
-  setElapsedSeconds(0);
-  segmentStartDistanceRef.current = 0;
-  segmentIndexRef.current = 0;
-  isStoppingRef.current = false;
+    gps.resetDistance();
+    resetIRIEstimator();
 
-  gps.resetDistance();
+    await createSession({ id: newSessionId, name: sessionName, serverHost });
 
-  setWsStatus('connecting');
-  wsClient.connect(serverHost, newSessionId);
-  await activateKeepAwakeAsync();
+    wsClient.connect(serverHost, newSessionId);
+    await activateKeepAwakeAsync();
 
-  sessionStartTime.current = Date.now();
-  elapsedTimer.current = setInterval(() => {
-    setElapsedSeconds(Math.floor((Date.now() - sessionStartTime.current) / 1000));
-  }, 1000);
-}
+    refs.sessionStartTime = Date.now();
+
+    // Elapsed time — just update the ref, display timer handles the render
+    elapsedTimer.current = setInterval(() => {
+      refs.elapsedSeconds = Math.floor((Date.now() - refs.sessionStartTime) / 1000);
+    }, 1000);
+
+    // IRI computation
+    iriTimer.current = setInterval(() => {
+      refs.currentIRI = computeRollingIRI();
+    }, 500);
+
+    // Start the single display update loop
+    startDisplayTimer();
+  }
 
   // ─── Stop ──────────────────────────────────────────────────────────────────
   function stopRecording() {
@@ -264,32 +242,28 @@ export default function RecordingScreen() {
   }
 
   async function confirmStop() {
-    // FIX: guard against double-call
-    if (isStoppingRef.current) return;
-    isStoppingRef.current = true;
+    if (refs.isStopping) return;
+    refs.isStopping = true;
+    refs.isRecording = false;
 
     setIsRecording(false);
-    isRecordingRef.current = false;
+    stopDisplayTimer();
 
-    clearInterval(elapsedTimer.current);
-    elapsedTimer.current = null;
-    clearInterval(iriUpdateTimer.current);
-    iriUpdateTimer.current = null;
-    clearInterval(displayTimer.current);
-    displayTimer.current = null;
+    clearInterval(elapsedTimer.current); elapsedTimer.current = null;
+    clearInterval(iriTimer.current); iriTimer.current = null;
 
     wsClient.disconnect();
-    setWsStatus('off');
+    refs.wsStatus = 'off';
     deactivateKeepAwake();
 
     try {
-      if (sessionIdRef.current) {
-        const segs = completedSegmentsRef.current;
+      if (refs.sessionId) {
+        const segs = refs.completedSegments;
         const avgIRI = segs.length > 0
           ? segs.reduce((s, seg) => s + (seg.iri_value || 0), 0) / segs.length
           : null;
-        await finalizeSession(sessionIdRef.current, {
-          distanceM: distanceMRef.current,
+        await finalizeSession(refs.sessionId, {
+          distanceM: refs.distanceM,
           segmentCount: segs.length,
           avgIRI,
         });
@@ -301,13 +275,13 @@ export default function RecordingScreen() {
     navigation.replace('History');
   }
 
-  // ─── Sensor Statuses ───────────────────────────────────────────────────────
+  // ─── Derived display values ────────────────────────────────────────────────
   const sensorStatuses = {
     imu:    imu.isActive    ? 'active'   : isRecording ? 'error'    : 'off',
-    gps:    gps.isActive    ? (isSpeedValid ? 'active' : 'degraded') : isRecording ? 'error' : 'off',
+    gps:    gps.isActive    ? (display.isSpeedValid ? 'active' : 'degraded') : isRecording ? 'error' : 'off',
     camera: camera.isActive ? 'active'   : isRecording ? 'degraded' : 'off',
     audio:  audio.isActive  ? 'active'   : isRecording ? 'degraded' : 'off',
-    ws: wsStatus === 'connected' ? 'active' : wsStatus === 'connecting' ? 'degraded' : wsStatus === 'disconnected' ? 'error' : 'off',
+    ws: display.wsStatus === 'connected' ? 'active' : display.wsStatus === 'connecting' ? 'degraded' : display.wsStatus === 'disconnected' ? 'error' : 'off',
   };
 
   function formatElapsed(secs) {
@@ -323,6 +297,8 @@ export default function RecordingScreen() {
     return `${Math.round(meters)} m`;
   }
 
+  const wsStatus = display.wsStatus;
+
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.safe}>
@@ -333,7 +309,7 @@ export default function RecordingScreen() {
         <View style={{ flex: 1 }}>
           <Text style={styles.sessionName} numberOfLines={1}>{sessionName}</Text>
           <Text style={styles.sessionMeta}>
-            {isRecording ? formatElapsed(elapsedSeconds) : 'READY'} · {formatDistance(distanceM)} · SEG {segmentIndexRef.current}
+            {isRecording ? formatElapsed(display.elapsedSeconds) : 'READY'} · {formatDistance(display.distanceM)} · SEG {segIndexRef.current}
           </Text>
         </View>
         <View style={[
@@ -371,14 +347,14 @@ export default function RecordingScreen() {
               <Text style={styles.cameraPlaceholderText}>CAM PERMISSION REQUIRED</Text>
             </View>
           )}
-          {isRecording && !isSpeedValid && (
+          {isRecording && !display.isSpeedValid && (
             <View style={styles.speedWarning}>
               <Text style={styles.speedWarningText}>⚠ SPEED &lt; 20 km/h — IRI INVALID</Text>
             </View>
           )}
-          {gpsCoords && (
+          {display.gpsCoords && (
             <View style={styles.gpsOverlay}>
-              <Text style={styles.gpsText}>{gpsCoords.lat.toFixed(5)}, {gpsCoords.lng.toFixed(5)}</Text>
+              <Text style={styles.gpsText}>{display.gpsCoords.lat.toFixed(5)}, {display.gpsCoords.lng.toFixed(5)}</Text>
             </View>
           )}
         </View>
@@ -386,26 +362,26 @@ export default function RecordingScreen() {
         {/* Data Panels */}
         <View style={styles.dataPanels}>
           <View style={styles.iriPanel}>
-            <IRIGauge iri={currentIRI} isValid={isSpeedValid || !isRecording} />
+            <IRIGauge iri={display.currentIRI} isValid={display.isSpeedValid || !isRecording} />
             <Text style={styles.iriNote}>LIVE ESTIMATE</Text>
           </View>
           <View style={styles.rightPanel}>
             <View style={styles.speedPanel}>
-              <Text style={[styles.speedValue, { color: isSpeedValid ? COLORS.green : COLORS.amber }]}>
-                {speedKmh.toFixed(0)}
+              <Text style={[styles.speedValue, { color: display.isSpeedValid ? COLORS.green : COLORS.amber }]}>
+                {display.speedKmh.toFixed(0)}
               </Text>
               <Text style={styles.speedUnit}>km/h</Text>
             </View>
             <View style={styles.waveformPanel}>
               <Text style={styles.waveformLabel}>ACCEL Z  m/s²</Text>
-              <AccelWaveform value={accelZ} />
+              <AccelWaveform value={display.accelZ} />
             </View>
             <View style={styles.audioPanel}>
               <Text style={styles.audioLabel}>MIC RMS</Text>
               <View style={styles.audioBar}>
                 <View style={[styles.audioFill, {
-                  width: `${Math.min(100, audioRMS * 500)}%`,
-                  backgroundColor: audioRMS > 0.1 ? COLORS.amber : COLORS.amberDim,
+                  width: `${Math.min(100, display.audioRMS * 500)}%`,
+                  backgroundColor: display.audioRMS > 0.1 ? COLORS.amber : COLORS.amberDim,
                 }]} />
               </View>
             </View>
@@ -417,11 +393,11 @@ export default function RecordingScreen() {
           <View style={styles.segmentProgress}>
             <View style={styles.segmentProgressTrack}>
               <View style={[styles.segmentProgressFill, {
-                width: `${Math.min(100, (currentSegmentDistance / segmentLengthM) * 100)}%`,
+                width: `${Math.min(100, (display.currentSegmentDistance / segmentLengthM) * 100)}%`,
               }]} />
             </View>
             <Text style={styles.segmentProgressText}>
-              {Math.round(currentSegmentDistance)}m / {segmentLengthM}m  SEGMENT {segmentIndexRef.current + 1}
+              {Math.round(display.currentSegmentDistance)}m / {segmentLengthM}m  SEGMENT {segIndexRef.current + 1}
             </Text>
           </View>
         )}
@@ -434,7 +410,7 @@ export default function RecordingScreen() {
 
       </ScrollView>
 
-      {/* Button — pinned at bottom, outside ScrollView */}
+      {/* Button — pinned at bottom */}
       <View style={styles.buttonArea}>
         {!isRecording ? (
           <TouchableOpacity style={styles.recordBtn} onPress={startRecording} activeOpacity={0.8}>
