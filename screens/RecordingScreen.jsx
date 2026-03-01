@@ -169,15 +169,17 @@ export default function RecordingScreen() {
 
   const camera = useCamera({
     enabled: isRecording,
+    serverHost: serverHost,
+    sessionId: refs.sessionId,
     onFrame: useCallback((packet) => {
       if (!refs.isRecording) return;
-      // Video segments are file URIs — send metadata only (backend can fetch/skip video)
+      // Video segments are uploaded via HTTP by useCamera itself.
+      // Only send lightweight metadata over WebSocket for status tracking.
       wsClient.send({
         type: "VIDEO_SEGMENT",
         timestamp: packet.timestamp,
-        uri: packet.uri,
-        fileSize: packet.fileSize || 0,
         durationMs: packet.durationMs,
+        uploaded: packet.uploaded,
       });
     }, []),
   });

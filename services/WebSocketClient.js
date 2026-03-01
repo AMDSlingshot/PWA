@@ -167,7 +167,6 @@ class WebSocketClient {
   }
 
   disconnect() {
-    this.destroyed = true;      // FIX: set BEFORE close so onclose doesn't reconnect
     this.shouldReconnect = false;
     this._stopHeartbeat();
 
@@ -176,6 +175,13 @@ class WebSocketClient {
       this.reconnectTimer = null;
     }
 
+    // Drain any remaining queued packets before closing
+    if (this.isConnected && this.queue.length > 0) {
+      this._drainQueue();
+    }
+
+    this.destroyed = true;      // FIX: set AFTER drain so _rawSend still works
+
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -183,7 +189,7 @@ class WebSocketClient {
 
     this.isConnected = false;
     this.isConnecting = false;
-    this.queue = []; // FIX: clear queue on disconnect — stale packets shouldn't be sent to new session
+    this.queue = [];
   }
 
   getStatus() {
