@@ -33,7 +33,10 @@ class WebSocketClient {
     if (this.isConnecting || this.isConnected) return;
 
     this.destroyed = false; // FIX: reset on new connect
-    this.serverUrl = `ws://${host}/ws/${sessionId}`;
+    // Auto-detect wss:// for HTTPS hosts
+    const protocol = host.startsWith('https') ? 'wss' : 'ws';
+    const cleanHost = host.replace(/^https?:\/\//, '');
+    this.serverUrl = `${protocol}://${cleanHost}/ws/${sessionId}`;
     this.sessionId = sessionId;
     this.shouldReconnect = true;
     this._connect();

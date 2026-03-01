@@ -108,7 +108,7 @@ export default function SetupScreen({ navigation }) {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.logo}>PULSE</Text>
-        <Text style={styles.logoSub}>COLLECTOR  v2.0</Text>
+        <Text style={styles.logoSub}>COLLECTOR</Text>
         <Text style={styles.tagline}>Physical Understanding of Living Street Economics</Text>
       </View>
 
@@ -129,8 +129,8 @@ export default function SetupScreen({ navigation }) {
           />
           <TouchableOpacity
             style={[styles.testBtn,
-              connectionStatus === 'ok' && styles.testBtnOk,
-              connectionStatus === 'fail' && styles.testBtnFail,
+            connectionStatus === 'ok' && styles.testBtnOk,
+            connectionStatus === 'fail' && styles.testBtnFail,
             ]}
             onPress={testConnection}
             disabled={isTestingConnection}
@@ -139,8 +139,8 @@ export default function SetupScreen({ navigation }) {
               <ActivityIndicator size="small" color={COLORS.green} />
             ) : (
               <Text style={[styles.testBtnText,
-                connectionStatus === 'ok' && { color: COLORS.green },
-                connectionStatus === 'fail' && { color: COLORS.red },
+              connectionStatus === 'ok' && { color: COLORS.green },
+              connectionStatus === 'fail' && { color: COLORS.red },
               ]}>
                 {connectionStatus === 'ok' ? '✓ OK' : connectionStatus === 'fail' ? '✗ FAIL' : 'TEST'}
               </Text>
@@ -254,7 +254,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.bg2, borderWidth: 1, borderColor: COLORS.border,
     borderRadius: RADIUS.sm, paddingHorizontal: 16, paddingVertical: 12, minWidth: 70, alignItems: 'center',
   },
-  testBtnOk:   { borderColor: COLORS.green + '80', backgroundColor: COLORS.greenFaint },
+  testBtnOk: { borderColor: COLORS.green + '80', backgroundColor: COLORS.greenFaint },
   testBtnFail: { borderColor: COLORS.red + '80', backgroundColor: COLORS.redFaint },
   testBtnText: { fontSize: 11, color: COLORS.textSecondary, fontWeight: '700', letterSpacing: 1 },
   hint: { fontSize: 10, color: COLORS.textMuted, lineHeight: 14 },
@@ -271,7 +271,7 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS.md, paddingVertical: SPACING.lg, alignItems: 'center', gap: 4, marginTop: SPACING.sm,
   },
   startBtnText: { fontSize: 15, color: COLORS.green, fontWeight: '800', letterSpacing: 3 },
-  startBtnSub:  { fontSize: 10, color: COLORS.greenMid, letterSpacing: 1 },
+  startBtnSub: { fontSize: 10, color: COLORS.greenMid, letterSpacing: 1 },
   historyLink: { alignItems: 'center', paddingVertical: SPACING.md },
   historyLinkText: { fontSize: 10, color: COLORS.textMuted, letterSpacing: 2, fontWeight: '600' },
 });
